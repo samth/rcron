@@ -22,6 +22,9 @@ jobs:
         with:
           version: ${{ matrix.racket-version }}
           variant: ${{ matrix.racket-variant }}
+      - name: Start cron daemon (Linux)
+        if: runner.os == 'Linux'
+        run: sudo service cron start
       - name: Install dependencies
         run: |
           raco pkg install --auto --batch rcron-lib/ rcron/

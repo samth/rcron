@@ -433,5 +433,60 @@
         [(windows)
          (check-false (schtasks-task-exists? "test-verify"))]))))
 
+;; --- Execution test: verify the system scheduler actually runs the command ---
+
+;; Check if the system scheduler daemon is running.
+(define (scheduler-running?)
+  (case current-os
+    [(unix)
+     ;; Check if cron daemon is active
+     (define out
+       (with-output-to-string
+         (lambda ()
+           (system "systemctl is-active cron 2>/dev/null || service cron status 2>/dev/null"))))
+     (regexp-match? #rx"active|running" out)]
+    [(macosx)
+     ;; launchd is always running on macOS (it's PID 1)
+     #t]
+    [(windows)
+     ;; Check if Task Scheduler service is running
+     (define out
+       (with-output-to-string
+         (lambda ()
+           (system "sc query Schedule 2>nul"))))
+     (string-contains? out "RUNNING")]
+    [else #f]))
+
+(when (scheduler-running?)
+  (test-case "system scheduler executes the command"
+    (with-system-cleanup
+      (lambda ()
+        (define marker
+          (path->string
+           (build-path (find-system-path 'temp-dir)
+                       (format "rcron-exec-test-~a" (current-seconds)))))
+        ;; Schedule a job that touches the marker file every minute
+        (define cmd
+          (case current-os
+            [(windows)
+             (string-append "cmd /c echo done > \"" marker "\"")]
+            [else
+             (string-append "touch " marker)]))
+        (cron "test-exec" "* * * * *" cmd)
+        ;; Poll for up to 120 seconds
+        (define found?
+          (let loop ([attempts 0])
+            (cond
+              [(file-exists? marker) #t]
+              [(>= attempts 120) #f]
+              [else
+               (sleep 1)
+               (loop (add1 attempts))])))
+        (check-true found?
+                    "scheduled command was not executed within 120 seconds")
+        ;; Clean up marker file
+        (when (file-exists? marker)
+          (delete-file marker))))))
+
 (module+ test
   (require (submod "..")))
