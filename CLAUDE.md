@@ -28,6 +28,7 @@ raco setup rcron  # rebuild docs
 - Cron fields use bitset representation (integers with bit positions for active values)
 - `days-is-wildcard?` and `weekdays-is-wildcard?` track whether `*` was used,
   needed for POSIX OR logic
-- Scheduler uses Racket threads with `alarm-evt` for timing
+- Scheduler uses platform-native systems: `crontab` (Linux), `launchd` (macOS), `schtasks` (Windows)
+- `cron` accepts a command as a string or list of strings (like `system`/`system*`)
 - All time calculations are UTC
-- `racket/base` plus `racket/math`, `racket/contract/base`, `racket/string` only
+- `racket/base` plus `racket/math`, `racket/contract/base`, `racket/string`, `racket/port`, `racket/system`

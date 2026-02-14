@@ -1,6 +1,11 @@
 # rcron
 
-Cron expression parsing and in-process job scheduling for Racket.
+Cron expression parsing and system-level job scheduling for Racket.
+
+Ported from [Bun's cron implementation](https://github.com/oven-sh/bun/pull/26999)
+(cron parser and next-occurrence calculator in Zig), adapted to idiomatic
+Racket. Uses the platform's native scheduler: `crontab` on Linux, `launchd`
+on macOS, `schtasks` on Windows.
 
 ## Installation
 
@@ -19,11 +24,11 @@ raco pkg install rcron
 ;; Find the next matching time (UTC seconds)
 (cron-next expr (current-seconds))
 
-;; Schedule a recurring job
-(cron "cleanup" "0 */6 * * *"
-      (lambda (evt)
-        (printf "Running cleanup at ~a\n"
-                (scheduled-event-scheduled-time evt))))
+;; Schedule a system cron job (string command)
+(cron "cleanup" "0 */6 * * *" "rm -rf /tmp/cache/*")
+
+;; Schedule with a list of arguments (as with system*)
+(cron "backup" "@daily" (list "/usr/bin/rsync" "-a" "/data/" "/backup/"))
 
 ;; List registered jobs
 (cron-jobs-list)
@@ -31,7 +36,7 @@ raco pkg install rcron
 ;; Remove a job
 (cron-remove "cleanup")
 
-;; Stop all jobs
+;; Remove all rcron jobs
 (cron-stop-all)
 ```
 

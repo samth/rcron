@@ -6,7 +6,8 @@
 @defmodule[rcron]
 
 The @racketmodname[rcron] library provides cron expression parsing, next-occurrence
-calculation, and an in-process job scheduler using Racket threads.
+calculation, and system-level cron job scheduling using the platform's native
+scheduler (@tt{crontab} on Linux, @tt{launchd} on macOS, @tt{schtasks} on Windows).
 
 Cron expressions use the standard 5-field format:
 
@@ -44,15 +45,6 @@ Represents a parsed cron expression. Each numeric field is a bitset encoding
 the active values for that field. The @racket[days-is-wildcard?] and
 @racket[weekdays-is-wildcard?] fields track whether the original expression
 used @tt{*}, which affects POSIX OR logic for matching.
-}
-
-@defstruct[scheduled-event ([type string?]
-                            [cron string?]
-                            [scheduled-time exact-nonnegative-integer?])]{
-Passed to job handler functions when a scheduled job fires. The @racket[type]
-field is @racket["scheduled"], @racket[cron] is the original cron expression
-string, and @racket[scheduled-time] is the trigger time in milliseconds since
-the Unix epoch.
 }
 
 @section{Parsing and Formatting}
@@ -93,31 +85,36 @@ cron expression matches, starting after @racket[from-secs]. Returns
 
 @section{Job Scheduler}
 
-The scheduler runs cron jobs as Racket threads. Each job is identified by a
-unique name string. Registering a job with a name that already exists
-replaces the previous job.
+The scheduler registers jobs with the platform's native scheduling system:
+@tt{crontab} on Linux, @tt{launchd} on macOS, and @tt{schtasks} on Windows.
+Jobs persist across process restarts and are managed by the operating system.
 
-@defproc[(cron [name string?] [schedule string?] [handler (-> scheduled-event? any)]) void?]{
-Registers and starts a cron job. The @racket[handler] is called with a
-@racket[scheduled-event] each time the @racket[schedule] fires.
+Each job is identified by a unique name string. Registering a job with a name
+that already exists replaces the previous job.
+
+The command to run can be specified as either a string (passed to the shell)
+or a list of strings (program and arguments, as with @racket[system*]).
+
+@defproc[(cron [name string?] [schedule string?] [command (or/c string? (listof string?))]) void?]{
+Registers a cron job with the system scheduler. The @racket[command] is
+executed by the OS each time the @racket[schedule] fires.
 
 @racketblock[
-(cron "cleanup" "0 */6 * * *"
-      (lambda (evt)
-        (printf "Running cleanup at ~a\n"
-                (scheduled-event-scheduled-time evt))))
+(cron "cleanup" "0 */6 * * *" "rm -rf /tmp/cache/*")
+(cron "backup" "@daily" (list "/usr/bin/rsync" "-a" "/data/" "/backup/"))
 ]
 }
 
 @defproc[(cron-remove [name string?]) void?]{
-Stops and removes the cron job with the given @racket[name]. Does nothing
-if no job with that name exists.
+Removes the cron job with the given @racket[name] from the system scheduler.
+Does nothing if no job with that name exists.
 }
 
 @defproc[(cron-jobs-list) (listof string?)]{
-Returns the names of all currently registered cron jobs.
+Returns the names of all rcron-managed jobs currently registered with the
+system scheduler.
 }
 
 @defproc[(cron-stop-all) void?]{
-Stops and removes all registered cron jobs.
+Removes all rcron-managed jobs from the system scheduler.
 }

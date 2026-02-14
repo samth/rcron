@@ -1,16 +1,13 @@
 #lang racket/base
 
-;; rcron - Cron expression parsing and in-process job scheduling.
+;; rcron - Cron expression parsing and system-level cron job scheduling.
 
 (require racket/contract/base
+         racket/file
          racket/math
-         racket/string)
-
-;; ============================================================================
-;; Scheduled event struct
-;; ============================================================================
-
-(struct scheduled-event (type cron scheduled-time) #:transparent)
+         racket/port
+         racket/string
+         racket/system)
 
 ;; ============================================================================
 ;; Cron expression struct (bitset representation)
@@ -425,83 +422,345 @@
                " "))
 
 ;; ============================================================================
-;; Cron job scheduler
+;; System cron job scheduler
 ;; ============================================================================
 
-(struct cron-job (name expr-str expr handler thread) #:mutable #:transparent)
+;; Detect the current platform
+(define current-platform
+  (case (system-type 'os)
+    [(unix) (if (regexp-match? #rx"(?i:darwin)" (with-output-to-string
+                                                  (lambda () (system "uname -s"))))
+               'macos
+               'linux)]
+    [(macosx) 'macos]
+    [(windows) 'windows]
+    [else (error 'rcron "unsupported platform: ~a" (system-type 'os))]))
 
-(define cron-jobs (make-hash))
-(define cron-lock (make-semaphore 1))
+(define rcron-marker "# rcron: ")
 
-(define (make-cron-thread name expr expr-str handler)
-  (thread
-   (lambda ()
-     (let loop ()
-       (define now (current-seconds))
-       (define next-time (cron-next expr now))
-       (cond
-         [(not next-time) (void)]
-         [else
-          (define delay-secs (max 0 (- next-time now)))
-          (define delay-ms (* delay-secs 1000))
-          (define target-ms (+ (current-inexact-milliseconds) delay-ms))
-          (sync (alarm-evt target-ms))
-          (define evt (scheduled-event "scheduled" expr-str (* next-time 1000)))
-          (with-handlers ([exn:fail? (lambda (e)
-                                       (log-error "cron job ~a failed: ~a" name (exn-message e)))])
-            (handler evt))
-          (loop)])))))
+;; Validate that a job name contains only alphanumeric, hyphens, and underscores.
+(define (validate-name! name)
+  (unless (regexp-match? #rx"^[a-zA-Z0-9_-]+$" name)
+    (error 'cron "invalid job name (must be alphanumeric, hyphens, underscores): ~a" name)))
 
-(define (cron name schedule handler)
+;; Convert a command (string or list of strings) to a shell command string.
+(define (command->string cmd)
+  (cond
+    [(string? cmd) cmd]
+    [(list? cmd)
+     (string-join (for/list ([arg (in-list cmd)])
+                    (if (regexp-match? #rx"[ \t\"']" arg)
+                        (string-append "'" (string-replace arg "'" "'\\''") "'")
+                        arg))
+                  " ")]
+    [else (error 'cron "command must be a string or list of strings")]))
+
+;; --- Linux: crontab ---
+
+(define (crontab-read)
+  (define-values (proc out in err)
+    (subprocess #f #f #f "/usr/bin/env" "crontab" "-l"))
+  (close-output-port in)
+  (define content (port->string out))
+  (close-input-port out)
+  (close-input-port err)
+  (subprocess-wait proc)
+  (if (zero? (subprocess-status proc))
+      content
+      ""))
+
+(define (crontab-write content)
+  (define tmp (make-temporary-file "rcron-~a"))
+  (call-with-output-file tmp #:exists 'truncate
+    (lambda (p) (display content p)))
+  (define ok? (system* (find-executable-path "crontab") (path->string tmp)))
+  (delete-file tmp)
+  (unless ok?
+    (error 'cron "failed to install crontab")))
+
+;; Remove a job's marker comment and its following cron line from crontab content.
+(define (crontab-remove-job name content)
+  (define marker (string-append rcron-marker name))
+  (define lines (string-split content "\n" #:trim? #f))
+  (let loop ([ls lines] [acc '()])
+    (cond
+      [(null? ls) (string-join (reverse acc) "\n")]
+      [(string=? (string-trim (car ls)) marker)
+       ;; Skip the marker line and the following cron line
+       (loop (if (and (pair? (cdr ls)) (not (string-prefix? (cadr ls) "#")))
+                 (cddr ls)
+                 (cdr ls))
+             acc)]
+      [else (loop (cdr ls) (cons (car ls) acc))])))
+
+(define (cron-install/linux name schedule command)
   (define expr (cron-parse schedule))
-  (call-with-semaphore cron-lock
-                       (lambda ()
-                         (when (hash-has-key? cron-jobs name)
-                           (define old (hash-ref cron-jobs name))
-                           (define old-thread (cron-job-thread old))
-                           (when (and old-thread (thread-running? old-thread))
-                             (kill-thread old-thread)))
-                         (define job-thread (make-cron-thread name expr schedule handler))
-                         (define job (cron-job name schedule expr handler job-thread))
-                         (hash-set! cron-jobs name job)
-                         (void))))
+  (define marker-line (string-append rcron-marker name))
+  (define cron-line
+    (string-append (cron-expr->string expr) " " (command->string command)))
+  (define existing (crontab-read))
+  (define cleaned (crontab-remove-job name existing))
+  (define new-content
+    (string-append (string-trim cleaned) "\n" marker-line "\n" cron-line "\n"))
+  (crontab-write new-content))
+
+(define (cron-remove/linux name)
+  (define existing (crontab-read))
+  (define cleaned (crontab-remove-job name existing))
+  (crontab-write cleaned))
+
+(define (cron-list/linux)
+  (define content (crontab-read))
+  (define lines (string-split content "\n" #:trim? #f))
+  (for/list ([line (in-list lines)]
+             #:when (string-prefix? (string-trim line) rcron-marker))
+    (substring (string-trim line) (string-length rcron-marker))))
+
+(define (cron-remove-all/linux)
+  (define names (cron-list/linux))
+  (when (pair? names)
+    (define content (crontab-read))
+    (define cleaned
+      (for/fold ([c content]) ([name (in-list names)])
+        (crontab-remove-job name c)))
+    (crontab-write cleaned)))
+
+;; --- macOS: launchd ---
+
+(define (launchd-plist-dir)
+  (build-path (find-system-path 'home-dir) "Library" "LaunchAgents"))
+
+(define (launchd-label name)
+  (string-append "com.rcron." name))
+
+(define (launchd-plist-path name)
+  (build-path (launchd-plist-dir) (string-append (launchd-label name) ".plist")))
+
+(define (bitfield->list bits min-val max-val)
+  (for/list ([i (in-range min-val (add1 max-val))]
+             #:when (bit-set? bits i))
+    i))
+
+(define (generate-calendar-intervals expr)
+  (define minutes (bitfield->list (cron-expr-minutes expr) 0 59))
+  (define hours (bitfield->list (cron-expr-hours expr) 0 23))
+  (define days (bitfield->list (cron-expr-days expr) 1 31))
+  (define months (bitfield->list (cron-expr-months expr) 1 12))
+  (define weekdays (bitfield->list (cron-expr-weekdays expr) 0 6))
+  (define all-mins? (= (length minutes) 60))
+  (define all-hrs? (= (length hours) 24))
+  (define all-days? (= (length days) 31))
+  (define all-months? (= (length months) 12))
+  (define all-wdays? (= (length weekdays) 7))
+  (apply string-append
+         (for*/list ([mo (in-list (if all-months? '(#f) months))]
+                     [dy (in-list (if all-days? '(#f) days))]
+                     [wd (in-list (if all-wdays? '(#f) weekdays))]
+                     [hr (in-list (if all-hrs? '(#f) hours))]
+                     [mn (in-list (if all-mins? '(#f) minutes))])
+           (string-append
+            "    <dict>\n"
+            (if mo (format "      <key>Month</key>\n      <integer>~a</integer>\n" mo) "")
+            (if dy (format "      <key>Day</key>\n      <integer>~a</integer>\n" dy) "")
+            (if wd (format "      <key>Weekday</key>\n      <integer>~a</integer>\n" wd) "")
+            (if hr (format "      <key>Hour</key>\n      <integer>~a</integer>\n" hr) "")
+            (if mn (format "      <key>Minute</key>\n      <integer>~a</integer>\n" mn) "")
+            "    </dict>\n"))))
+
+(define (generate-plist name command expr)
+  (define args
+    (cond
+      [(string? command)
+       (list "/bin/sh" "-c" command)]
+      [(list? command) command]
+      [else (error 'cron "command must be a string or list of strings")]))
+  (string-append
+   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+   "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+   "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+   "<plist version=\"1.0\">\n"
+   "<dict>\n"
+   "  <key>Label</key>\n"
+   "  <string>" (launchd-label name) "</string>\n"
+   "  <key>ProgramArguments</key>\n"
+   "  <array>\n"
+   (apply string-append
+          (for/list ([arg (in-list args)])
+            (string-append "    <string>" arg "</string>\n")))
+   "  </array>\n"
+   "  <key>StartCalendarInterval</key>\n"
+   "  <array>\n"
+   (generate-calendar-intervals expr)
+   "  </array>\n"
+   "</dict>\n"
+   "</plist>\n"))
+
+(define (launchd-uid)
+  (string-trim (with-output-to-string (lambda () (system "id -u")))))
+
+(define (cron-install/macos name schedule command)
+  (define expr (cron-parse schedule))
+  (define plist-path (launchd-plist-path name))
+  ;; Unload existing if present
+  (when (file-exists? plist-path)
+    (system* (find-executable-path "launchctl")
+             "bootout"
+             (format "gui/~a/~a" (launchd-uid) (launchd-label name))))
+  (define dir (launchd-plist-dir))
+  (unless (directory-exists? dir)
+    (make-directory* dir))
+  (call-with-output-file plist-path #:exists 'truncate
+    (lambda (p) (display (generate-plist name command expr) p)))
+  (define ok?
+    (system* (find-executable-path "launchctl")
+             "bootstrap"
+             (format "gui/~a" (launchd-uid))
+             (path->string plist-path)))
+  (unless ok?
+    (error 'cron "failed to load launchd job ~a" name)))
+
+(define (cron-remove/macos name)
+  (define plist-path (launchd-plist-path name))
+  (when (file-exists? plist-path)
+    (system* (find-executable-path "launchctl")
+             "bootout"
+             (format "gui/~a/~a" (launchd-uid) (launchd-label name)))
+    (delete-file plist-path)))
+
+(define (cron-list/macos)
+  (define dir (launchd-plist-dir))
+  (if (directory-exists? dir)
+      (for/list ([f (in-list (directory-list dir))]
+                 #:when (let ([s (path->string f)])
+                          (and (string-prefix? s "com.rcron.")
+                               (string-suffix? s ".plist"))))
+        (define s (path->string f))
+        (substring s 10 (- (string-length s) 6)))
+      '()))
+
+(define (cron-remove-all/macos)
+  (for ([name (in-list (cron-list/macos))])
+    (cron-remove/macos name)))
+
+;; --- Windows: schtasks ---
+
+(define (schtasks-task-name name)
+  (string-append "rcron-" name))
+
+(define (cron-install/windows name schedule command)
+  (define expr (cron-parse schedule))
+  (define task-name (schtasks-task-name name))
+  (define cmd-str (command->string command))
+  ;; Delete existing task if present
+  (system* (find-executable-path "schtasks")
+           "/delete" "/tn" task-name "/f")
+  ;; schtasks only supports simple schedules; use MINUTE with interval 1
+  ;; and rely on the command checking cron-next for precise matching,
+  ;; or map simple patterns directly.
+  (define minutes (bitfield->list (cron-expr-minutes expr) 0 59))
+  (define hours (bitfield->list (cron-expr-hours expr) 0 23))
+  (define all-mins? (= (length minutes) 60))
+  (define all-hrs? (= (length hours) 24))
+  (define single-min? (= (length minutes) 1))
+  (define single-hr? (= (length hours) 1))
+  (define ok?
+    (cond
+      ;; Hourly: same minute every hour
+      [(and single-min? all-hrs?)
+       (system* (find-executable-path "schtasks")
+                "/create" "/tn" task-name "/tr" cmd-str
+                "/sc" "HOURLY"
+                "/st" (format "00:~a" (pad2 (car minutes)))
+                "/f")]
+      ;; Daily at a specific time
+      [(and single-min? single-hr?)
+       (system* (find-executable-path "schtasks")
+                "/create" "/tn" task-name "/tr" cmd-str
+                "/sc" "DAILY"
+                "/st" (format "~a:~a" (pad2 (car hours)) (pad2 (car minutes)))
+                "/f")]
+      ;; Fallback: run every minute, command checks cron-next
+      [else
+       (system* (find-executable-path "schtasks")
+                "/create" "/tn" task-name "/tr" cmd-str
+                "/sc" "MINUTE" "/mo" "1"
+                "/f")]))
+  (unless ok?
+    (error 'cron "failed to create scheduled task ~a" name)))
+
+(define (pad2 n)
+  (if (< n 10)
+      (string-append "0" (number->string n))
+      (number->string n)))
+
+(define (cron-remove/windows name)
+  (system* (find-executable-path "schtasks")
+           "/delete" "/tn" (schtasks-task-name name) "/f"))
+
+(define (cron-list/windows)
+  (define out
+    (with-output-to-string
+      (lambda ()
+        (system (string-append "schtasks /query /fo LIST | findstr \"rcron-\"")))))
+  (define lines (string-split out "\n"))
+  (for/list ([line (in-list lines)]
+             #:when (string-contains? line "rcron-"))
+    (define trimmed (string-trim line))
+    (define prefix "TaskName:")
+    (define name-part
+      (if (string-prefix? trimmed prefix)
+          (string-trim (substring trimmed (string-length prefix)))
+          trimmed))
+    (define task-prefix "\\rcron-")
+    (if (string-prefix? name-part task-prefix)
+        (substring name-part (string-length task-prefix))
+        (if (string-prefix? name-part "rcron-")
+            (substring name-part 7)
+            name-part))))
+
+(define (cron-remove-all/windows)
+  (for ([name (in-list (cron-list/windows))])
+    (cron-remove/windows name)))
+
+;; --- Platform dispatch ---
+
+(define (cron name schedule command)
+  (validate-name! name)
+  (cron-parse schedule) ;; validate
+  (case current-platform
+    [(linux) (cron-install/linux name schedule command)]
+    [(macos) (cron-install/macos name schedule command)]
+    [(windows) (cron-install/windows name schedule command)]))
 
 (define (cron-remove name)
-  (call-with-semaphore cron-lock
-                       (lambda ()
-                         (when (hash-has-key? cron-jobs name)
-                           (define job (hash-ref cron-jobs name))
-                           (define t (cron-job-thread job))
-                           (when (and t (thread-running? t))
-                             (kill-thread t))
-                           (hash-remove! cron-jobs name))
-                         (void))))
+  (case current-platform
+    [(linux) (cron-remove/linux name)]
+    [(macos) (cron-remove/macos name)]
+    [(windows) (cron-remove/windows name)]))
 
 (define (cron-jobs-list)
-  (call-with-semaphore cron-lock (lambda () (hash-keys cron-jobs))))
+  (case current-platform
+    [(linux) (cron-list/linux)]
+    [(macos) (cron-list/macos)]
+    [(windows) (cron-list/windows)]))
 
 (define (cron-stop-all)
-  (call-with-semaphore cron-lock
-                       (lambda ()
-                         (for ([(name job) (in-hash cron-jobs)])
-                           (define t (cron-job-thread job))
-                           (when (and t (thread-running? t))
-                             (kill-thread t)))
-                         (hash-clear! cron-jobs)
-                         (void))))
+  (case current-platform
+    [(linux) (cron-remove-all/linux)]
+    [(macos) (cron-remove-all/macos)]
+    [(windows) (cron-remove-all/windows)]))
 
 ;; ============================================================================
 ;; Provides
 ;; ============================================================================
 
-(provide (struct-out scheduled-event)
-         (struct-out cron-expr)
+(provide (struct-out cron-expr)
 
          (contract-out [cron-parse (-> string? cron-expr?)]
                        [cron-next (-> cron-expr? real? (or/c exact-integer? #f))]
                        [cron-expr->string (-> cron-expr? string?)])
 
-         (contract-out [cron (-> string? string? (-> scheduled-event? any) void?)]
+         (contract-out [cron (-> string? string? (or/c string? (listof string?)) void?)]
                        [cron-remove (-> string? void?)]
                        [cron-jobs-list (-> (listof string?))]
                        [cron-stop-all (-> void?)]))

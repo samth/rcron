@@ -275,42 +275,163 @@
   (check-equal? (secs->utc-list n4) '(2025 1 20 0 0 0)))
 
 ;; ============================================================================
-;; Scheduled event struct tests
+;; System scheduler integration tests
 ;; ============================================================================
 
-(test-case "scheduled-event creation and accessors"
-  (define evt (scheduled-event "scheduled" "*/5 * * * *" 1738040400000))
-  (check-equal? (scheduled-event-type evt) "scheduled")
-  (check-equal? (scheduled-event-cron evt) "*/5 * * * *")
-  (check-equal? (scheduled-event-scheduled-time evt) 1738040400000))
+(require racket/file
+         racket/port
+         racket/string
+         racket/system)
 
-;; ============================================================================
-;; Scheduler tests
-;; ============================================================================
+(define current-os (system-type 'os))
 
-(test-case "cron register and remove"
-  (cron "test-job" "* * * * *" (lambda (evt) (void)))
-  (check-not-false (member "test-job" (cron-jobs-list)))
-  (cron-remove "test-job")
-  (check-false (member "test-job" (cron-jobs-list))))
+;; --- Platform-specific save/restore ---
+
+;; Linux: save/restore crontab content
+(define saved-crontab #f)
+
+(define (run-crontab-read)
+  (define-values (proc out in err)
+    (subprocess #f #f #f "/usr/bin/env" "crontab" "-l"))
+  (close-output-port in)
+  (define content (port->string out))
+  (close-input-port out)
+  (close-input-port err)
+  (subprocess-wait proc)
+  (if (zero? (subprocess-status proc)) content ""))
+
+(define (run-crontab-write content)
+  (define tmp (make-temporary-file "rcron-restore-~a"))
+  (call-with-output-file tmp #:exists 'truncate
+    (lambda (p) (display content p)))
+  (system* (find-executable-path "crontab") (path->string tmp))
+  (delete-file tmp))
+
+;; macOS: launchd plist directory
+(define (launchd-plist-dir)
+  (build-path (find-system-path 'home-dir) "Library" "LaunchAgents"))
+
+(define (launchd-plist-path name)
+  (build-path (launchd-plist-dir) (string-append "com.rcron." name ".plist")))
+
+;; Windows: schtasks task name
+(define (schtasks-task-exists? name)
+  (define task-name (string-append "rcron-" name))
+  (define out
+    (with-output-to-string
+      (lambda ()
+        (system (string-append "schtasks /query /tn " task-name " 2>nul")))))
+  (string-contains? out task-name))
+
+;; Save state before tests
+(define (save-system-state)
+  (case current-os
+    [(unix macosx) (set! saved-crontab (run-crontab-read))]
+    [else (void)]))
+
+;; Restore state after tests
+(define (restore-system-state)
+  (cron-stop-all)
+  (case current-os
+    [(unix macosx)
+     (when saved-crontab
+       (run-crontab-write saved-crontab))]
+    [else (void)]))
+
+;; Run a test thunk with save/restore.
+(define (with-system-cleanup thunk)
+  (dynamic-wind
+    save-system-state
+    thunk
+    restore-system-state))
+
+;; --- Cross-platform tests ---
+
+(test-case "cron install and list (string command)"
+  (with-system-cleanup
+    (lambda ()
+      (cron "test-string-cmd" "0 3 * * *" "echo hello")
+      (check-not-false (member "test-string-cmd" (cron-jobs-list))))))
+
+(test-case "cron install with list command"
+  (with-system-cleanup
+    (lambda ()
+      (cron "test-list-cmd" "*/5 * * * *" (list "echo" "hello" "world"))
+      (check-not-false (member "test-list-cmd" (cron-jobs-list))))))
+
+(test-case "cron-remove removes a job"
+  (with-system-cleanup
+    (lambda ()
+      (cron "test-remove" "@hourly" "echo test")
+      (check-not-false (member "test-remove" (cron-jobs-list)))
+      (cron-remove "test-remove")
+      (check-false (member "test-remove" (cron-jobs-list))))))
 
 (test-case "cron re-register replaces existing"
-  (cron "replace-test" "* * * * *" (lambda (evt) (void)))
-  (cron "replace-test" "*/5 * * * *" (lambda (evt) (void)))
-  (check-equal? (length (filter (lambda (n) (string=? n "replace-test")) (cron-jobs-list))) 1)
-  (cron-remove "replace-test"))
+  (with-system-cleanup
+    (lambda ()
+      (cron "test-replace" "0 1 * * *" "echo first")
+      (cron "test-replace" "0 2 * * *" "echo second")
+      (check-equal?
+       (length (filter (lambda (n) (string=? n "test-replace"))
+                       (cron-jobs-list)))
+       1))))
 
-(test-case "cron-stop-all clears all jobs"
-  (cron "job-a" "* * * * *" (lambda (evt) (void)))
-  (cron "job-b" "*/5 * * * *" (lambda (evt) (void)))
-  (check-true (>= (length (cron-jobs-list)) 2))
-  (cron-stop-all)
-  (check-equal? (cron-jobs-list) '()))
+(test-case "cron-stop-all clears all rcron jobs"
+  (with-system-cleanup
+    (lambda ()
+      (cron "test-stop-a" "@daily" "echo a")
+      (cron "test-stop-b" "@hourly" "echo b")
+      (check-true (>= (length (cron-jobs-list)) 2))
+      (cron-stop-all)
+      (check-equal? (cron-jobs-list) '()))))
 
 (test-case "cron-remove is idempotent"
-  (cron-remove "nonexistent-job"))
+  (with-system-cleanup
+    (lambda ()
+      (cron-remove "nonexistent-job"))))
 
-(cron-stop-all)
+(test-case "cron validates job names"
+  (check-exn exn:fail? (lambda () (cron "bad name" "@daily" "echo x")))
+  (check-exn exn:fail? (lambda () (cron "bad/name" "@daily" "echo x")))
+  (check-exn exn:fail? (lambda () (cron "" "@daily" "echo x"))))
+
+;; --- Platform-specific verification ---
+
+(test-case "verify system state directly"
+  (with-system-cleanup
+    (lambda ()
+      (cron "test-verify" "@daily" "echo verify-test")
+      (case current-os
+        [(unix)
+         ;; Linux: check crontab content for marker and command
+         (define content (run-crontab-read))
+         (check-not-false
+          (regexp-match? #rx"# rcron: test-verify" content))
+         (check-not-false
+          (regexp-match? #rx"echo verify-test" content))]
+        [(macosx)
+         ;; macOS: check plist file exists
+         (check-true (file-exists? (launchd-plist-path "test-verify")))
+         (define plist (file->string (launchd-plist-path "test-verify")))
+         (check-not-false
+          (regexp-match? #rx"com\\.rcron\\.test-verify" plist))
+         (check-not-false
+          (regexp-match? #rx"echo verify-test" plist))]
+        [(windows)
+         ;; Windows: check schtasks reports the task
+         (check-true (schtasks-task-exists? "test-verify"))])
+      ;; Remove and verify it's gone from the system
+      (cron-remove "test-verify")
+      (case current-os
+        [(unix)
+         (define after (run-crontab-read))
+         (check-false
+          (regexp-match? #rx"# rcron: test-verify" after))]
+        [(macosx)
+         (check-false (file-exists? (launchd-plist-path "test-verify")))]
+        [(windows)
+         (check-false (schtasks-task-exists? "test-verify"))]))))
 
 (module+ test
   (require (submod "..")))
