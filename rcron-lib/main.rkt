@@ -695,7 +695,8 @@
 
 (define (cron-remove/windows name)
   (system* (find-executable-path "schtasks")
-           "/delete" "/tn" (schtasks-task-name name) "/f"))
+           "/delete" "/tn" (schtasks-task-name name) "/f")
+  (void))
 
 (define (cron-list/windows)
   (define out
