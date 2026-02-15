@@ -79,6 +79,37 @@
   (define expr (cron-parse "0 0 * * 7"))
   (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 0)))
 
+(test-case "weekday range 0-7 covers all days"
+  (define expr (cron-parse "0 0 * * 0-7"))
+  (for ([i (in-range 0 7)])
+    (check-true (bitwise-bit-set? (cron-expr-weekdays expr) i)
+                (format "bit ~a should be set" i))))
+
+(test-case "weekday range 1-7 is Mon-Sun"
+  (define expr (cron-parse "0 0 * * 1-7"))
+  ;; Sunday (0) set via folding 7→0
+  (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 0))
+  (for ([i (in-range 1 7)])
+    (check-true (bitwise-bit-set? (cron-expr-weekdays expr) i)
+                (format "bit ~a should be set" i))))
+
+(test-case "weekday range 5-7 is Fri-Sat-Sun"
+  (define expr (cron-parse "0 0 * * 5-7"))
+  (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 0))  ;; Sun via 7→0
+  (check-false (bitwise-bit-set? (cron-expr-weekdays expr) 1))
+  (check-false (bitwise-bit-set? (cron-expr-weekdays expr) 4))
+  (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 5))
+  (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 6)))
+
+(test-case "*/1 in day field is treated as wildcard for POSIX OR"
+  ;; "0 0 */1 * 1": days-is-wildcard? must be true since */1 = *
+  (define expr (cron-parse "0 0 */1 * 1"))
+  (check-true (cron-expr-days-is-wildcard? expr)))
+
+(test-case "*/1 in weekday field is treated as wildcard for POSIX OR"
+  (define expr (cron-parse "0 0 15 * */1"))
+  (check-true (cron-expr-weekdays-is-wildcard? expr)))
+
 ;; ============================================================================
 ;; Nickname parsing tests
 ;; ============================================================================
@@ -274,6 +305,15 @@
   (define n4 (cron-next expr n3))
   (check-equal? (secs->utc-list n4) '(2025 1 20 0 0 0)))
 
+(test-case "next: */1 day field uses POSIX OR correctly"
+  ;; */1 in day field is equivalent to *, so days-is-wildcard? = #t
+  ;; This means only the weekday restriction matters (AND logic with wildcard)
+  (define expr (cron-parse "0 0 */1 * 1"))
+  (define from (utc-timestamp 2025 1 5 12 0 0)) ;; Sunday
+  (define n (cron-next expr from))
+  ;; Should match next Monday, not require both day-of-month AND Monday
+  (check-equal? (secs->utc-list n) '(2025 1 6 0 0 0)))
+
 ;; ============================================================================
 ;; System scheduler integration tests
 ;; ============================================================================
@@ -432,6 +472,28 @@
          (check-false (file-exists? (launchd-plist-path "test-verify")))]
         [(windows)
          (check-false (schtasks-task-exists? "test-verify"))]))))
+
+;; --- % escaping test (Linux only) ---
+
+(when (eq? current-os 'unix)
+  (test-case "percent signs are escaped in crontab"
+    (with-system-cleanup
+      (lambda ()
+        (cron "test-percent" "@hourly" "date +%Y-%m-%d")
+        (define content (run-crontab-read))
+        ;; The crontab line should have \% instead of bare %
+        (check-not-false
+         (regexp-match? #rx"date \\+\\\\%Y-\\\\%m-\\\\%d" content))))))
+
+;; --- Windows unsupported schedule test ---
+
+(when (eq? current-os 'windows)
+  (test-case "Windows errors on unsupported complex schedule"
+    (with-system-cleanup
+      (lambda ()
+        ;; Complex schedule with multiple hours and days should error
+        (check-exn #rx"too complex"
+                   (lambda () (cron "test-complex" "0,30 1,2 * * *" "echo x")))))))
 
 ;; --- Execution test: verify the system scheduler actually runs the command ---
 

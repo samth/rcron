@@ -78,6 +78,10 @@ Computes the next UTC time (in seconds since the Unix epoch) at which the
 cron expression matches, starting after @racket[from-secs]. Returns
 @racket[#f] if no match is found within approximately 4 years.
 
+Note that @racket[cron-next] always operates in UTC. The system schedulers
+(@tt{crontab}, @tt{launchd}, @tt{schtasks}) typically interpret schedules
+in the system's local time zone.
+
 @racketblock[
 (cron-next (cron-parse "0 0 1 1 *") (current-seconds))
 ]
@@ -98,6 +102,12 @@ or a list of strings (program and arguments, as with @racket[system*]).
 @defproc[(cron [name string?] [schedule string?] [command (or/c string? (listof string?))]) void?]{
 Registers a cron job with the system scheduler. The @racket[command] is
 executed by the OS each time the @racket[schedule] fires.
+
+On Windows, only simple schedule patterns are supported:
+@tt{* * * * *} (every minute), @tt{*/N * * * *} (every N minutes),
+@tt{N * * * *} (hourly at minute N), @tt{N N * * *} (daily at a specific time),
+and @tt{N N * * N} (weekly on a specific day and time). More complex
+expressions raise an error.
 
 @racketblock[
 (cron "cleanup" "0 */6 * * *" "rm -rf /tmp/cache/*")

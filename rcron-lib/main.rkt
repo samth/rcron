@@ -178,8 +178,10 @@
   (cond
     [(not n) #f]
     [(not (exact-nonnegative-integer? n)) #f]
-    [(and (eq? kind 'weekday) (= n 7)) 0]
-    [(or (< n min-val) (> n max-val)) #f]
+    ;; Weekdays accept 0-7 (7 = Sunday, folded to bit 0 after bitset computation)
+    [(and (eq? kind 'weekday) (> n 7)) #f]
+    [(and (not (eq? kind 'weekday)) (or (< n min-val) (> n max-val))) #f]
+    [(and (eq? kind 'weekday) (< n min-val)) #f]
     [else n]))
 
 (define (string-index-of str ch)
@@ -239,9 +241,15 @@
               (error 'cron-parse "invalid value: ~a" base))
             (values v (if step-str max-val v))])]))
 
-    (bitwise-ior result
-                 (for/fold ([bits 0]) ([i (in-range range-min (add1 range-max) step)])
-                   (bitwise-ior bits (arithmetic-shift 1 i))))))
+    (define field-bits
+      (bitwise-ior result
+                   (for/fold ([bits 0]) ([i (in-range range-min (add1 range-max) step)])
+                     (bitwise-ior bits (arithmetic-shift 1 i)))))
+    ;; Fold weekday bit 7 (Sunday-as-7) into bit 0 (Sunday-as-0)
+    (if (and (eq? kind 'weekday) (bitwise-bit-set? field-bits 7))
+        (bitwise-ior (bitwise-and field-bits (bitwise-not (arithmetic-shift 1 7)))
+                     1)
+        field-bits)))
 
 ;; ============================================================================
 ;; Main parser
@@ -261,13 +269,15 @@
        (error 'cron-parse "too many fields (expected 5, got ~a)" (length fields)))
      (when (< (length fields) 5)
        (error 'cron-parse "too few fields (expected 5, got ~a)" (length fields)))
+     (define days-bits (parse-field (list-ref fields 2) 1 31 'none))
+     (define weekdays-bits (parse-field (list-ref fields 4) 0 6 'weekday))
      (cron-expr (parse-field (list-ref fields 0) 0 59 'none)
                 (parse-field (list-ref fields 1) 0 23 'none)
-                (parse-field (list-ref fields 2) 1 31 'none)
+                days-bits
                 (parse-field (list-ref fields 3) 1 12 'month)
-                (parse-field (list-ref fields 4) 0 6 'weekday)
-                (string=? (list-ref fields 2) "*")
-                (string=? (list-ref fields 4) "*"))]))
+                weekdays-bits
+                (= days-bits all-days)
+                (= weekdays-bits all-weekdays))]))
 
 ;; ============================================================================
 ;; Date/time helpers (UTC)
@@ -278,7 +288,7 @@
     [(1 3 5 7 8 10 12) 31]
     [(4 6 9 11) 30]
     [(2) (if (leap-year? year) 29 28)]
-    [else 30]))
+    [else (error 'days-in-month "invalid month: ~a" month)]))
 
 (define (leap-year? year)
   (or (and (zero? (modulo year 4)) (not (zero? (modulo year 100)))) (zero? (modulo year 400))))
@@ -450,7 +460,9 @@
     [(list? cmd)
      (string-join (for/list ([arg (in-list cmd)])
                     (if (regexp-match? #rx"[ \t\"']" arg)
-                        (string-append "'" (string-replace arg "'" "'\\''") "'")
+                        (if (eq? current-platform 'windows)
+                            (string-append "\"" (string-replace arg "\"" "\"\"") "\"")
+                            (string-append "'" (string-replace arg "'" "'\\''") "'"))
                         arg))
                   " ")]
     [else (error 'cron "command must be a string or list of strings")]))
@@ -496,8 +508,10 @@
 (define (cron-install/linux name schedule command)
   (define expr (cron-parse schedule))
   (define marker-line (string-append rcron-marker name))
+  ;; Escape % as \% in crontab lines (vixie cron treats unescaped % as newline)
+  (define cmd-str (string-replace (command->string command) "%" "\\%"))
   (define cron-line
-    (string-append (cron-expr->string expr) " " (command->string command)))
+    (string-append (cron-expr->string expr) " " cmd-str))
   (define existing (crontab-read))
   (define cleaned (crontab-remove-job name existing))
   (define new-content
@@ -567,6 +581,16 @@
             (if mn (format "      <key>Minute</key>\n      <integer>~a</integer>\n" mn) "")
             "    </dict>\n"))))
 
+(define (xml-escape str)
+  (regexp-replace* #rx"[&<>\"']" str
+    (lambda (m)
+      (case (string-ref m 0)
+        [(#\&) "&amp;"]
+        [(#\<) "&lt;"]
+        [(#\>) "&gt;"]
+        [(#\") "&quot;"]
+        [(#\') "&apos;"]))))
+
 (define (generate-plist name command expr)
   (define args
     (cond
@@ -581,12 +605,12 @@
    "<plist version=\"1.0\">\n"
    "<dict>\n"
    "  <key>Label</key>\n"
-   "  <string>" (launchd-label name) "</string>\n"
+   "  <string>" (xml-escape (launchd-label name)) "</string>\n"
    "  <key>ProgramArguments</key>\n"
    "  <array>\n"
    (apply string-append
           (for/list ([arg (in-list args)])
-            (string-append "    <string>" arg "</string>\n")))
+            (string-append "    <string>" (xml-escape arg) "</string>\n")))
    "  </array>\n"
    "  <key>StartCalendarInterval</key>\n"
    "  <array>\n"
@@ -647,6 +671,9 @@
 (define (schtasks-task-name name)
   (string-append "rcron-" name))
 
+(define schtasks-day-names
+  (vector "SUN" "MON" "TUE" "WED" "THU" "FRI" "SAT"))
+
 (define (cron-install/windows name schedule command)
   (define expr (cron-parse schedule))
   (define task-name (schtasks-task-name name))
@@ -654,37 +681,68 @@
   ;; Delete existing task if present
   (system* (find-executable-path "schtasks")
            "/delete" "/tn" task-name "/f")
-  ;; schtasks only supports simple schedules; use MINUTE with interval 1
-  ;; and rely on the command checking cron-next for precise matching,
-  ;; or map simple patterns directly.
+  ;; Map cron patterns to schtasks schedule types.
+  ;; Only simple patterns are supported; error on anything else.
   (define minutes (bitfield->list (cron-expr-minutes expr) 0 59))
   (define hours (bitfield->list (cron-expr-hours expr) 0 23))
+  (define weekdays (bitfield->list (cron-expr-weekdays expr) 0 6))
   (define all-mins? (= (length minutes) 60))
   (define all-hrs? (= (length hours) 24))
+  (define all-days? (cron-expr-days-is-wildcard? expr))
+  (define all-months? (= (cron-expr-months expr) all-months))
+  (define all-wdays? (= (length weekdays) 7))
   (define single-min? (= (length minutes) 1))
   (define single-hr? (= (length hours) 1))
+  (define single-wd? (= (length weekdays) 1))
+  ;; Check for */N minute pattern: evenly-spaced minutes across 0-59
+  (define minute-step
+    (and all-hrs? all-days? all-months? all-wdays?
+         (> (length minutes) 1)
+         (let ([step (- (cadr minutes) (car minutes))])
+           (and (= (car minutes) 0)
+                (for/and ([i (in-range 1 (length minutes))])
+                  (= (list-ref minutes i) (* i step)))
+                step))))
   (define ok?
     (cond
-      ;; Hourly: same minute every hour
-      [(and single-min? all-hrs?)
+      ;; */N * * * * → MINUTE with /mo N
+      [minute-step
        (system* (find-executable-path "schtasks")
                 "/create" "/tn" task-name "/tr" cmd-str
-                "/sc" "HOURLY"
+                "/sc" "MINUTE" "/mo" (number->string minute-step)
+                "/f")]
+      ;; * * * * * → MINUTE with /mo 1
+      [(and all-mins? all-hrs? all-days? all-months? all-wdays?)
+       (system* (find-executable-path "schtasks")
+                "/create" "/tn" task-name "/tr" cmd-str
+                "/sc" "MINUTE" "/mo" "1"
+                "/f")]
+      ;; N * * * * → HOURLY
+      [(and single-min? all-hrs? all-days? all-months? all-wdays?)
+       (system* (find-executable-path "schtasks")
+                "/create" "/tn" task-name "/tr" cmd-str
+                "/sc" "HOURLY" "/mo" "1"
                 "/st" (format "00:~a" (pad2 (car minutes)))
                 "/f")]
-      ;; Daily at a specific time
-      [(and single-min? single-hr?)
+      ;; N N * * * → DAILY
+      [(and single-min? single-hr? all-days? all-months? all-wdays?)
        (system* (find-executable-path "schtasks")
                 "/create" "/tn" task-name "/tr" cmd-str
                 "/sc" "DAILY"
                 "/st" (format "~a:~a" (pad2 (car hours)) (pad2 (car minutes)))
                 "/f")]
-      ;; Fallback: run every minute, command checks cron-next
-      [else
+      ;; N N * * N → WEEKLY with /d DAY_NAME
+      [(and single-min? single-hr? all-days? all-months? single-wd?)
        (system* (find-executable-path "schtasks")
                 "/create" "/tn" task-name "/tr" cmd-str
-                "/sc" "MINUTE" "/mo" "1"
-                "/f")]))
+                "/sc" "WEEKLY"
+                "/d" (vector-ref schtasks-day-names (car weekdays))
+                "/st" (format "~a:~a" (pad2 (car hours)) (pad2 (car minutes)))
+                "/f")]
+      [else
+       (error 'cron
+              "schedule ~a is too complex for Windows Task Scheduler; use a simpler expression"
+              schedule)]))
   (unless ok?
     (error 'cron "failed to create scheduled task ~a" name)))
 
