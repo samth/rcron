@@ -467,6 +467,23 @@
                            (check-exn #rx"too complex"
                                       (lambda () (cron "test-complex" "0,30 1,2 * * *" "echo x")))))))
 
+;; --- launchd semantics test (POSIX OR) ---
+
+(test-case "launchd calendar intervals should not combine Day and Weekday in one dict"
+  (define base (or (current-load-relative-directory) (current-directory)))
+  (define lib-path (build-path base ".." "rcron-lib" "main.rkt"))
+  (dynamic-require `(file ,(path->string lib-path)) #f)
+  (define ns (module->namespace `(file ,(path->string lib-path))))
+  (define generate-calendar-intervals (eval 'generate-calendar-intervals ns))
+  (define expr (cron-parse "0 0 15 * 1"))
+  (define intervals (generate-calendar-intervals expr))
+  (define dicts (string-split intervals "</dict>"))
+  (define (dict-has-both? d)
+    (and (regexp-match? #rx"<key>Day</key>" d)
+         (regexp-match? #rx"<key>Weekday</key>" d)))
+  (check-false (for/or ([d (in-list dicts)]) (dict-has-both? d))
+               "POSIX OR semantics require separate Day and Weekday entries"))
+
 ;; --- Execution test: verify the system scheduler actually runs the command ---
 
 ;; Check if the system scheduler daemon is running.
