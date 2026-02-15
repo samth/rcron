@@ -18,19 +18,37 @@ jobs:
     name: Test on ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: Bogdanp/setup-racket@v1.14
+
+      - name: Cache Racket installation
+        uses: actions/cache@v4
+        id: cache-racket
+        with:
+          path: ${{ runner.tool_cache }}/racket
+          key: ${{ runner.os }}-racket-${{ matrix.racket-version }}-${{ matrix.racket-variant }}
+
+      - name: Install Racket
+        if: steps.cache-racket.outputs.cache-hit != 'true'
+        uses: Bogdanp/setup-racket@v1.14
         with:
           version: ${{ matrix.racket-version }}
           variant: ${{ matrix.racket-variant }}
+          dest: ${{ runner.tool_cache }}/racket
+          sudo: never
+
+      - name: Restore Racket to PATH
+        if: steps.cache-racket.outputs.cache-hit == 'true'
+        shell: bash
+        run: echo "${{ runner.tool_cache }}/racket/bin" >> $GITHUB_PATH
+
       - name: Start cron daemon (Linux)
         if: runner.os == 'Linux'
         run: sudo service cron start
+
       - name: Install dependencies
-        run: |
-          raco pkg install --auto --batch rcron-lib/ rcron/
+        run: raco pkg install --auto --batch rcron-lib/ rcron/
+
       - name: Run tests
-        run: |
-          raco test -y rcron/tests/
+        run: raco test -y rcron/tests/
+
       - name: Build docs
-        run: |
-          raco setup --doc-index --check-pkg-deps rcron
+        run: raco setup --doc-index --check-pkg-deps rcron
