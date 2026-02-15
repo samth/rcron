@@ -247,8 +247,7 @@
                      (bitwise-ior bits (arithmetic-shift 1 i)))))
     ;; Fold weekday bit 7 (Sunday-as-7) into bit 0 (Sunday-as-0)
     (if (and (eq? kind 'weekday) (bitwise-bit-set? field-bits 7))
-        (bitwise-ior (bitwise-and field-bits (bitwise-not (arithmetic-shift 1 7)))
-                     1)
+        (bitwise-ior (bitwise-and field-bits (bitwise-not (arithmetic-shift 1 7))) 1)
         field-bits)))
 
 ;; ============================================================================
@@ -438,10 +437,10 @@
 ;; Detect the current platform
 (define current-platform
   (case (system-type 'os)
-    [(unix) (if (regexp-match? #rx"(?i:darwin)" (with-output-to-string
-                                                  (lambda () (system "uname -s"))))
-               'macos
-               'linux)]
+    [(unix)
+     (if (regexp-match? #rx"(?i:darwin)" (with-output-to-string (lambda () (system "uname -s"))))
+         'macos
+         'linux)]
     [(macosx) 'macos]
     [(windows) 'windows]
     [else (error 'rcron "unsupported platform: ~a" (system-type 'os))]))
@@ -470,21 +469,17 @@
 ;; --- Linux: crontab ---
 
 (define (crontab-read)
-  (define-values (proc out in err)
-    (subprocess #f #f #f "/usr/bin/env" "crontab" "-l"))
+  (define-values (proc out in err) (subprocess #f #f #f "/usr/bin/env" "crontab" "-l"))
   (close-output-port in)
   (define content (port->string out))
   (close-input-port out)
   (close-input-port err)
   (subprocess-wait proc)
-  (if (zero? (subprocess-status proc))
-      content
-      ""))
+  (if (zero? (subprocess-status proc)) content ""))
 
 (define (crontab-write content)
   (define tmp (make-temporary-file "rcron-~a"))
-  (call-with-output-file tmp #:exists 'truncate
-    (lambda (p) (display content p)))
+  (call-with-output-file tmp #:exists 'truncate (lambda (p) (display content p)))
   (define ok? (system* (find-executable-path "crontab") (path->string tmp)))
   (delete-file tmp)
   (unless ok?
@@ -494,7 +489,8 @@
 (define (crontab-remove-job name content)
   (define marker (string-append rcron-marker name))
   (define lines (string-split content "\n" #:trim? #f))
-  (let loop ([ls lines] [acc '()])
+  (let loop ([ls lines]
+             [acc '()])
     (cond
       [(null? ls) (string-join (reverse acc) "\n")]
       [(string=? (string-trim (car ls)) marker)
@@ -510,12 +506,10 @@
   (define marker-line (string-append rcron-marker name))
   ;; Escape % as \% in crontab lines (vixie cron treats unescaped % as newline)
   (define cmd-str (string-replace (command->string command) "%" "\\%"))
-  (define cron-line
-    (string-append (cron-expr->string expr) " " cmd-str))
+  (define cron-line (string-append (cron-expr->string expr) " " cmd-str))
   (define existing (crontab-read))
   (define cleaned (crontab-remove-job name existing))
-  (define new-content
-    (string-append (string-trim cleaned) "\n" marker-line "\n" cron-line "\n"))
+  (define new-content (string-append (string-trim cleaned) "\n" marker-line "\n" cron-line "\n"))
   (crontab-write new-content))
 
 (define (cron-remove/linux name)
@@ -567,57 +561,77 @@
   (define all-months? (= (length months) 12))
   (define all-wdays? (= (length weekdays) 7))
   (apply string-append
-         (for*/list ([mo (in-list (if all-months? '(#f) months))]
-                     [dy (in-list (if all-days? '(#f) days))]
-                     [wd (in-list (if all-wdays? '(#f) weekdays))]
-                     [hr (in-list (if all-hrs? '(#f) hours))]
-                     [mn (in-list (if all-mins? '(#f) minutes))])
-           (string-append
-            "    <dict>\n"
-            (if mo (format "      <key>Month</key>\n      <integer>~a</integer>\n" mo) "")
-            (if dy (format "      <key>Day</key>\n      <integer>~a</integer>\n" dy) "")
-            (if wd (format "      <key>Weekday</key>\n      <integer>~a</integer>\n" wd) "")
-            (if hr (format "      <key>Hour</key>\n      <integer>~a</integer>\n" hr) "")
-            (if mn (format "      <key>Minute</key>\n      <integer>~a</integer>\n" mn) "")
-            "    </dict>\n"))))
+         (for*/list ([mo (in-list (if all-months?
+                                      '(#f)
+                                      months))]
+                     [dy (in-list (if all-days?
+                                      '(#f)
+                                      days))]
+                     [wd (in-list (if all-wdays?
+                                      '(#f)
+                                      weekdays))]
+                     [hr (in-list (if all-hrs?
+                                      '(#f)
+                                      hours))]
+                     [mn (in-list (if all-mins?
+                                      '(#f)
+                                      minutes))])
+           (string-append "    <dict>\n"
+                          (if mo
+                              (format "      <key>Month</key>\n      <integer>~a</integer>\n" mo)
+                              "")
+                          (if dy
+                              (format "      <key>Day</key>\n      <integer>~a</integer>\n" dy)
+                              "")
+                          (if wd
+                              (format "      <key>Weekday</key>\n      <integer>~a</integer>\n" wd)
+                              "")
+                          (if hr
+                              (format "      <key>Hour</key>\n      <integer>~a</integer>\n" hr)
+                              "")
+                          (if mn
+                              (format "      <key>Minute</key>\n      <integer>~a</integer>\n" mn)
+                              "")
+                          "    </dict>\n"))))
 
 (define (xml-escape str)
-  (regexp-replace* #rx"[&<>\"']" str
-    (lambda (m)
-      (case (string-ref m 0)
-        [(#\&) "&amp;"]
-        [(#\<) "&lt;"]
-        [(#\>) "&gt;"]
-        [(#\") "&quot;"]
-        [(#\') "&apos;"]))))
+  (regexp-replace* #rx"[&<>\"']"
+                   str
+                   (lambda (m)
+                     (case (string-ref m 0)
+                       [(#\&) "&amp;"]
+                       [(#\<) "&lt;"]
+                       [(#\>) "&gt;"]
+                       [(#\") "&quot;"]
+                       [(#\') "&apos;"]))))
 
 (define (generate-plist name command expr)
   (define args
     (cond
-      [(string? command)
-       (list "/bin/sh" "-c" command)]
+      [(string? command) (list "/bin/sh" "-c" command)]
       [(list? command) command]
       [else (error 'cron "command must be a string or list of strings")]))
-  (string-append
-   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-   "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
-   "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
-   "<plist version=\"1.0\">\n"
-   "<dict>\n"
-   "  <key>Label</key>\n"
-   "  <string>" (xml-escape (launchd-label name)) "</string>\n"
-   "  <key>ProgramArguments</key>\n"
-   "  <array>\n"
-   (apply string-append
-          (for/list ([arg (in-list args)])
-            (string-append "    <string>" (xml-escape arg) "</string>\n")))
-   "  </array>\n"
-   "  <key>StartCalendarInterval</key>\n"
-   "  <array>\n"
-   (generate-calendar-intervals expr)
-   "  </array>\n"
-   "</dict>\n"
-   "</plist>\n"))
+  (string-append "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                 "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+                 "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+                 "<plist version=\"1.0\">\n"
+                 "<dict>\n"
+                 "  <key>Label</key>\n"
+                 "  <string>"
+                 (xml-escape (launchd-label name))
+                 "</string>\n"
+                 "  <key>ProgramArguments</key>\n"
+                 "  <array>\n"
+                 (apply string-append
+                        (for/list ([arg (in-list args)])
+                          (string-append "    <string>" (xml-escape arg) "</string>\n")))
+                 "  </array>\n"
+                 "  <key>StartCalendarInterval</key>\n"
+                 "  <array>\n"
+                 (generate-calendar-intervals expr)
+                 "  </array>\n"
+                 "</dict>\n"
+                 "</plist>\n"))
 
 (define (launchd-uid)
   (string-trim (with-output-to-string (lambda () (system "id -u")))))
@@ -633,8 +647,9 @@
   (define dir (launchd-plist-dir))
   (unless (directory-exists? dir)
     (make-directory* dir))
-  (call-with-output-file plist-path #:exists 'truncate
-    (lambda (p) (display (generate-plist name command expr) p)))
+  (call-with-output-file plist-path
+                         #:exists 'truncate
+                         (lambda (p) (display (generate-plist name command expr) p)))
   (define ok?
     (system* (find-executable-path "launchctl")
              "bootstrap"
@@ -656,8 +671,7 @@
   (if (directory-exists? dir)
       (for/list ([f (in-list (directory-list dir))]
                  #:when (let ([s (path->string f)])
-                          (and (string-prefix? s "com.rcron.")
-                               (string-suffix? s ".plist"))))
+                          (and (string-prefix? s "com.rcron.") (string-suffix? s ".plist"))))
         (define s (path->string f))
         (substring s 10 (- (string-length s) 6)))
       '()))
@@ -671,16 +685,14 @@
 (define (schtasks-task-name name)
   (string-append "rcron-" name))
 
-(define schtasks-day-names
-  (vector "SUN" "MON" "TUE" "WED" "THU" "FRI" "SAT"))
+(define schtasks-day-names (vector "SUN" "MON" "TUE" "WED" "THU" "FRI" "SAT"))
 
 (define (cron-install/windows name schedule command)
   (define expr (cron-parse schedule))
   (define task-name (schtasks-task-name name))
   (define cmd-str (command->string command))
   ;; Delete existing task if present
-  (system* (find-executable-path "schtasks")
-           "/delete" "/tn" task-name "/f")
+  (system* (find-executable-path "schtasks") "/delete" "/tn" task-name "/f")
   ;; Map cron patterns to schtasks schedule types.
   ;; Only simple patterns are supported; error on anything else.
   (define minutes (bitfield->list (cron-expr-minutes expr) 0 59))
@@ -696,7 +708,10 @@
   (define single-wd? (= (length weekdays) 1))
   ;; Check for */N minute pattern: evenly-spaced minutes across 0-59
   (define minute-step
-    (and all-hrs? all-days? all-months? all-wdays?
+    (and all-hrs?
+         all-days?
+         all-months?
+         all-wdays?
          (> (length minutes) 1)
          (let ([step (- (cadr minutes) (car minutes))])
            (and (= (car minutes) 0)
@@ -708,36 +723,71 @@
       ;; */N * * * * → MINUTE with /mo N
       [minute-step
        (system* (find-executable-path "schtasks")
-                "/create" "/tn" task-name "/tr" cmd-str
-                "/sc" "MINUTE" "/mo" (number->string minute-step)
+                "/create"
+                "/tn"
+                task-name
+                "/tr"
+                cmd-str
+                "/sc"
+                "MINUTE"
+                "/mo"
+                (number->string minute-step)
                 "/f")]
       ;; * * * * * → MINUTE with /mo 1
       [(and all-mins? all-hrs? all-days? all-months? all-wdays?)
        (system* (find-executable-path "schtasks")
-                "/create" "/tn" task-name "/tr" cmd-str
-                "/sc" "MINUTE" "/mo" "1"
+                "/create"
+                "/tn"
+                task-name
+                "/tr"
+                cmd-str
+                "/sc"
+                "MINUTE"
+                "/mo"
+                "1"
                 "/f")]
       ;; N * * * * → HOURLY
       [(and single-min? all-hrs? all-days? all-months? all-wdays?)
        (system* (find-executable-path "schtasks")
-                "/create" "/tn" task-name "/tr" cmd-str
-                "/sc" "HOURLY" "/mo" "1"
-                "/st" (format "00:~a" (pad2 (car minutes)))
+                "/create"
+                "/tn"
+                task-name
+                "/tr"
+                cmd-str
+                "/sc"
+                "HOURLY"
+                "/mo"
+                "1"
+                "/st"
+                (format "00:~a" (pad2 (car minutes)))
                 "/f")]
       ;; N N * * * → DAILY
       [(and single-min? single-hr? all-days? all-months? all-wdays?)
        (system* (find-executable-path "schtasks")
-                "/create" "/tn" task-name "/tr" cmd-str
-                "/sc" "DAILY"
-                "/st" (format "~a:~a" (pad2 (car hours)) (pad2 (car minutes)))
+                "/create"
+                "/tn"
+                task-name
+                "/tr"
+                cmd-str
+                "/sc"
+                "DAILY"
+                "/st"
+                (format "~a:~a" (pad2 (car hours)) (pad2 (car minutes)))
                 "/f")]
       ;; N N * * N → WEEKLY with /d DAY_NAME
       [(and single-min? single-hr? all-days? all-months? single-wd?)
        (system* (find-executable-path "schtasks")
-                "/create" "/tn" task-name "/tr" cmd-str
-                "/sc" "WEEKLY"
-                "/d" (vector-ref schtasks-day-names (car weekdays))
-                "/st" (format "~a:~a" (pad2 (car hours)) (pad2 (car minutes)))
+                "/create"
+                "/tn"
+                task-name
+                "/tr"
+                cmd-str
+                "/sc"
+                "WEEKLY"
+                "/d"
+                (vector-ref schtasks-day-names (car weekdays))
+                "/st"
+                (format "~a:~a" (pad2 (car hours)) (pad2 (car minutes)))
                 "/f")]
       [else
        (error 'cron
@@ -752,15 +802,13 @@
       (number->string n)))
 
 (define (cron-remove/windows name)
-  (system* (find-executable-path "schtasks")
-           "/delete" "/tn" (schtasks-task-name name) "/f")
+  (system* (find-executable-path "schtasks") "/delete" "/tn" (schtasks-task-name name) "/f")
   (void))
 
 (define (cron-list/windows)
   (define out
     (with-output-to-string
-      (lambda ()
-        (system (string-append "schtasks /query /fo LIST | findstr \"rcron-\"")))))
+     (lambda () (system (string-append "schtasks /query /fo LIST | findstr \"rcron-\"")))))
   (define lines (string-split out "\n"))
   (for/list ([line (in-list lines)]
              #:when (string-contains? line "rcron-"))

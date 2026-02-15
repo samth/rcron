@@ -82,20 +82,18 @@
 (test-case "weekday range 0-7 covers all days"
   (define expr (cron-parse "0 0 * * 0-7"))
   (for ([i (in-range 0 7)])
-    (check-true (bitwise-bit-set? (cron-expr-weekdays expr) i)
-                (format "bit ~a should be set" i))))
+    (check-true (bitwise-bit-set? (cron-expr-weekdays expr) i) (format "bit ~a should be set" i))))
 
 (test-case "weekday range 1-7 is Mon-Sun"
   (define expr (cron-parse "0 0 * * 1-7"))
   ;; Sunday (0) set via folding 7→0
   (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 0))
   (for ([i (in-range 1 7)])
-    (check-true (bitwise-bit-set? (cron-expr-weekdays expr) i)
-                (format "bit ~a should be set" i))))
+    (check-true (bitwise-bit-set? (cron-expr-weekdays expr) i) (format "bit ~a should be set" i))))
 
 (test-case "weekday range 5-7 is Fri-Sat-Sun"
   (define expr (cron-parse "0 0 * * 5-7"))
-  (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 0))  ;; Sun via 7→0
+  (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 0)) ;; Sun via 7→0
   (check-false (bitwise-bit-set? (cron-expr-weekdays expr) 1))
   (check-false (bitwise-bit-set? (cron-expr-weekdays expr) 4))
   (check-true (bitwise-bit-set? (cron-expr-weekdays expr) 5))
@@ -331,8 +329,7 @@
 (define saved-crontab #f)
 
 (define (run-crontab-read)
-  (define-values (proc out in err)
-    (subprocess #f #f #f "/usr/bin/env" "crontab" "-l"))
+  (define-values (proc out in err) (subprocess #f #f #f "/usr/bin/env" "crontab" "-l"))
   (close-output-port in)
   (define content (port->string out))
   (close-input-port out)
@@ -342,8 +339,7 @@
 
 (define (run-crontab-write content)
   (define tmp (make-temporary-file "rcron-restore-~a"))
-  (call-with-output-file tmp #:exists 'truncate
-    (lambda (p) (display content p)))
+  (call-with-output-file tmp #:exists 'truncate (lambda (p) (display content p)))
   (system* (find-executable-path "crontab") (path->string tmp))
   (delete-file tmp))
 
@@ -358,9 +354,8 @@
 (define (schtasks-task-exists? name)
   (define task-name (string-append "rcron-" name))
   (define out
-    (with-output-to-string
-      (lambda ()
-        (system (string-append "schtasks /query /tn " task-name " 2>nul")))))
+    (with-output-to-string (lambda ()
+                             (system (string-append "schtasks /query /tn " task-name " 2>nul")))))
   (string-contains? out task-name))
 
 ;; Save state before tests
@@ -380,56 +375,44 @@
 
 ;; Run a test thunk with save/restore.
 (define (with-system-cleanup thunk)
-  (dynamic-wind
-    save-system-state
-    thunk
-    restore-system-state))
+  (dynamic-wind save-system-state thunk restore-system-state))
 
 ;; --- Cross-platform tests ---
 
 (test-case "cron install and list (string command)"
-  (with-system-cleanup
-    (lambda ()
-      (cron "test-string-cmd" "0 3 * * *" "echo hello")
-      (check-not-false (member "test-string-cmd" (cron-jobs-list))))))
+  (with-system-cleanup (lambda ()
+                         (cron "test-string-cmd" "0 3 * * *" "echo hello")
+                         (check-not-false (member "test-string-cmd" (cron-jobs-list))))))
 
 (test-case "cron install with list command"
-  (with-system-cleanup
-    (lambda ()
-      (cron "test-list-cmd" "*/5 * * * *" (list "echo" "hello" "world"))
-      (check-not-false (member "test-list-cmd" (cron-jobs-list))))))
+  (with-system-cleanup (lambda ()
+                         (cron "test-list-cmd" "*/5 * * * *" (list "echo" "hello" "world"))
+                         (check-not-false (member "test-list-cmd" (cron-jobs-list))))))
 
 (test-case "cron-remove removes a job"
-  (with-system-cleanup
-    (lambda ()
-      (cron "test-remove" "@hourly" "echo test")
-      (check-not-false (member "test-remove" (cron-jobs-list)))
-      (cron-remove "test-remove")
-      (check-false (member "test-remove" (cron-jobs-list))))))
+  (with-system-cleanup (lambda ()
+                         (cron "test-remove" "@hourly" "echo test")
+                         (check-not-false (member "test-remove" (cron-jobs-list)))
+                         (cron-remove "test-remove")
+                         (check-false (member "test-remove" (cron-jobs-list))))))
 
 (test-case "cron re-register replaces existing"
   (with-system-cleanup
-    (lambda ()
-      (cron "test-replace" "0 1 * * *" "echo first")
-      (cron "test-replace" "0 2 * * *" "echo second")
-      (check-equal?
-       (length (filter (lambda (n) (string=? n "test-replace"))
-                       (cron-jobs-list)))
-       1))))
+   (lambda ()
+     (cron "test-replace" "0 1 * * *" "echo first")
+     (cron "test-replace" "0 2 * * *" "echo second")
+     (check-equal? (length (filter (lambda (n) (string=? n "test-replace")) (cron-jobs-list))) 1))))
 
 (test-case "cron-stop-all clears all rcron jobs"
-  (with-system-cleanup
-    (lambda ()
-      (cron "test-stop-a" "@daily" "echo a")
-      (cron "test-stop-b" "@hourly" "echo b")
-      (check-true (>= (length (cron-jobs-list)) 2))
-      (cron-stop-all)
-      (check-equal? (cron-jobs-list) '()))))
+  (with-system-cleanup (lambda ()
+                         (cron "test-stop-a" "@daily" "echo a")
+                         (cron "test-stop-b" "@hourly" "echo b")
+                         (check-true (>= (length (cron-jobs-list)) 2))
+                         (cron-stop-all)
+                         (check-equal? (cron-jobs-list) '()))))
 
 (test-case "cron-remove is idempotent"
-  (with-system-cleanup
-    (lambda ()
-      (cron-remove "nonexistent-job"))))
+  (with-system-cleanup (lambda () (cron-remove "nonexistent-job"))))
 
 (test-case "cron validates job names"
   (check-exn exn:fail? (lambda () (cron "bad name" "@daily" "echo x")))
@@ -439,61 +422,50 @@
 ;; --- Platform-specific verification ---
 
 (test-case "verify system state directly"
-  (with-system-cleanup
-    (lambda ()
-      (cron "test-verify" "@daily" "echo verify-test")
-      (case current-os
-        [(unix)
-         ;; Linux: check crontab content for marker and command
-         (define content (run-crontab-read))
-         (check-not-false
-          (regexp-match? #rx"# rcron: test-verify" content))
-         (check-not-false
-          (regexp-match? #rx"echo verify-test" content))]
-        [(macosx)
-         ;; macOS: check plist file exists
-         (check-true (file-exists? (launchd-plist-path "test-verify")))
-         (define plist (file->string (launchd-plist-path "test-verify")))
-         (check-not-false
-          (regexp-match? #rx"com\\.rcron\\.test-verify" plist))
-         (check-not-false
-          (regexp-match? #rx"echo verify-test" plist))]
-        [(windows)
-         ;; Windows: check schtasks reports the task
-         (check-true (schtasks-task-exists? "test-verify"))])
-      ;; Remove and verify it's gone from the system
-      (cron-remove "test-verify")
-      (case current-os
-        [(unix)
-         (define after (run-crontab-read))
-         (check-false
-          (regexp-match? #rx"# rcron: test-verify" after))]
-        [(macosx)
-         (check-false (file-exists? (launchd-plist-path "test-verify")))]
-        [(windows)
-         (check-false (schtasks-task-exists? "test-verify"))]))))
+  (with-system-cleanup (lambda ()
+                         (cron "test-verify" "@daily" "echo verify-test")
+                         (case current-os
+                           [(unix)
+                            ;; Linux: check crontab content for marker and command
+                            (define content (run-crontab-read))
+                            (check-not-false (regexp-match? #rx"# rcron: test-verify" content))
+                            (check-not-false (regexp-match? #rx"echo verify-test" content))]
+                           [(macosx)
+                            ;; macOS: check plist file exists
+                            (check-true (file-exists? (launchd-plist-path "test-verify")))
+                            (define plist (file->string (launchd-plist-path "test-verify")))
+                            (check-not-false (regexp-match? #rx"com\\.rcron\\.test-verify" plist))
+                            (check-not-false (regexp-match? #rx"echo verify-test" plist))]
+                           ;; Windows: check schtasks reports the task
+                           [(windows) (check-true (schtasks-task-exists? "test-verify"))])
+                         ;; Remove and verify it's gone from the system
+                         (cron-remove "test-verify")
+                         (case current-os
+                           [(unix)
+                            (define after (run-crontab-read))
+                            (check-false (regexp-match? #rx"# rcron: test-verify" after))]
+                           [(macosx) (check-false (file-exists? (launchd-plist-path "test-verify")))]
+                           [(windows) (check-false (schtasks-task-exists? "test-verify"))]))))
 
 ;; --- % escaping test (Linux only) ---
 
 (when (eq? current-os 'unix)
   (test-case "percent signs are escaped in crontab"
-    (with-system-cleanup
-      (lambda ()
-        (cron "test-percent" "@hourly" "date +%Y-%m-%d")
-        (define content (run-crontab-read))
-        ;; The crontab line should have \% instead of bare %
-        (check-not-false
-         (regexp-match? #rx"date \\+\\\\%Y-\\\\%m-\\\\%d" content))))))
+    (with-system-cleanup (lambda ()
+                           (cron "test-percent" "@hourly" "date +%Y-%m-%d")
+                           (define content (run-crontab-read))
+                           ;; The crontab line should have \% instead of bare %
+                           (check-not-false (regexp-match? #rx"date \\+\\\\%Y-\\\\%m-\\\\%d"
+                                                           content))))))
 
 ;; --- Windows unsupported schedule test ---
 
 (when (eq? current-os 'windows)
   (test-case "Windows errors on unsupported complex schedule"
-    (with-system-cleanup
-      (lambda ()
-        ;; Complex schedule with multiple hours and days should error
-        (check-exn #rx"too complex"
-                   (lambda () (cron "test-complex" "0,30 1,2 * * *" "echo x")))))))
+    (with-system-cleanup (lambda ()
+                           ;; Complex schedule with multiple hours and days should error
+                           (check-exn #rx"too complex"
+                                      (lambda () (cron "test-complex" "0,30 1,2 * * *" "echo x")))))))
 
 ;; --- Execution test: verify the system scheduler actually runs the command ---
 
@@ -504,51 +476,43 @@
      ;; Check if cron daemon is active
      (define out
        (with-output-to-string
-         (lambda ()
-           (system "systemctl is-active cron 2>/dev/null || service cron status 2>/dev/null"))))
+        (lambda ()
+          (system "systemctl is-active cron 2>/dev/null || service cron status 2>/dev/null"))))
      (regexp-match? #rx"active|running" out)]
-    [(macosx)
-     ;; launchd is always running on macOS (it's PID 1)
-     #t]
+    ;; launchd is always running on macOS (it's PID 1)
+    [(macosx) #t]
     [(windows)
      ;; Check if Task Scheduler service is running
-     (define out
-       (with-output-to-string
-         (lambda ()
-           (system "sc query Schedule 2>nul"))))
+     (define out (with-output-to-string (lambda () (system "sc query Schedule 2>nul"))))
      (string-contains? out "RUNNING")]
     [else #f]))
 
 (when (scheduler-running?)
   (test-case "system scheduler executes the command"
-    (with-system-cleanup
-      (lambda ()
-        (define marker
-          (path->string
-           (build-path (find-system-path 'temp-dir)
-                       (format "rcron-exec-test-~a" (current-seconds)))))
-        ;; Schedule a job that touches the marker file every minute
-        (define cmd
-          (case current-os
-            [(windows)
-             (string-append "cmd /c echo done > \"" marker "\"")]
-            [else
-             (string-append "touch " marker)]))
-        (cron "test-exec" "* * * * *" cmd)
-        ;; Poll for up to 120 seconds
-        (define found?
-          (let loop ([attempts 0])
-            (cond
-              [(file-exists? marker) #t]
-              [(>= attempts 120) #f]
-              [else
-               (sleep 1)
-               (loop (add1 attempts))])))
-        (check-true found?
-                    "scheduled command was not executed within 120 seconds")
-        ;; Clean up marker file
-        (when (file-exists? marker)
-          (delete-file marker))))))
+    (with-system-cleanup (lambda ()
+                           (define marker
+                             (path->string (build-path (find-system-path 'temp-dir)
+                                                       (format "rcron-exec-test-~a"
+                                                               (current-seconds)))))
+                           ;; Schedule a job that touches the marker file every minute
+                           (define cmd
+                             (case current-os
+                               [(windows) (string-append "cmd /c echo done > \"" marker "\"")]
+                               [else (string-append "touch " marker)]))
+                           (cron "test-exec" "* * * * *" cmd)
+                           ;; Poll for up to 120 seconds
+                           (define found?
+                             (let loop ([attempts 0])
+                               (cond
+                                 [(file-exists? marker) #t]
+                                 [(>= attempts 120) #f]
+                                 [else
+                                  (sleep 1)
+                                  (loop (add1 attempts))])))
+                           (check-true found? "scheduled command was not executed within 120 seconds")
+                           ;; Clean up marker file
+                           (when (file-exists? marker)
+                             (delete-file marker))))))
 
 (module+ test
   (require (submod "..")))
