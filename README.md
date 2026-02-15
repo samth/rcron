@@ -58,6 +58,18 @@ triggers the schedule (POSIX OR logic).
 Nicknames: `@yearly`, `@annually`, `@monthly`, `@weekly`, `@daily`,
 `@midnight`, `@hourly`.
 
+## Notes
+
+- `cron-next` computes times in **UTC**. The system schedulers (`crontab`,
+  `launchd`, `schtasks`) interpret schedules in the system's **local time zone**.
+
+- **Windows** supports only simple schedule patterns: `* * * * *`,
+  `*/N * * * *`, `N * * * *`, `N N * * *`, and `N N * * N`. Complex
+  expressions raise an error.
+
+- **macOS**: when both day-of-month and day-of-week are restricted (POSIX OR),
+  the command may execute twice on dates where both conditions match.
+
 ## Documentation
 
 After installing, run `raco docs rcron` to view the Scribble documentation.

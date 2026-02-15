@@ -470,10 +470,9 @@
 ;; --- launchd semantics test (POSIX OR) ---
 
 (test-case "launchd calendar intervals should not combine Day and Weekday in one dict"
-  (define base (or (current-load-relative-directory) (current-directory)))
-  (define lib-path (build-path base ".." ".." "rcron-lib" "main.rkt"))
-  (dynamic-require `(file ,(path->string lib-path)) #f)
-  (define ns (module->namespace `(file ,(path->string lib-path))))
+  ;; Access unexported generate-calendar-intervals via the module namespace.
+  ;; rcron-lib/main is already loaded since we (require rcron).
+  (define ns (module->namespace 'rcron/main))
   (define generate-calendar-intervals (eval 'generate-calendar-intervals ns))
   (define expr (cron-parse "0 0 15 * 1"))
   (define intervals (generate-calendar-intervals expr))

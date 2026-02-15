@@ -76,7 +76,10 @@ its active values separated by commas, or @tt{*} if all values are active.
 @defproc[(cron-next [expr cron-expr?] [from-secs real?]) (or/c exact-integer? #f)]{
 Computes the next UTC time (in seconds since the Unix epoch) at which the
 cron expression matches, starting after @racket[from-secs]. Returns
-@racket[#f] if no match is found within approximately 4 years.
+@racket[#f] if no match is found within a search limit. The search advances
+one field at a time for up to approximately 2 million iterations, which
+covers at least 4 years of minute-by-minute scanning but may span much
+longer for sparse expressions that skip months or days.
 
 Note that @racket[cron-next] always operates in UTC. The system schedulers
 (@tt{crontab}, @tt{launchd}, @tt{schtasks}) typically interpret schedules
@@ -108,6 +111,11 @@ On Windows, only simple schedule patterns are supported:
 @tt{N * * * *} (hourly at minute N), @tt{N N * * *} (daily at a specific time),
 and @tt{N N * * N} (weekly on a specific day and time). More complex
 expressions raise an error.
+
+On macOS, when both day-of-month and day-of-week are restricted, the
+POSIX OR behavior is approximated using separate @tt{launchd} calendar
+interval entries. On dates where both conditions happen to match, the
+command may execute twice.
 
 @racketblock[
 (cron "cleanup" "0 */6 * * *" "rm -rf /tmp/cache/*")

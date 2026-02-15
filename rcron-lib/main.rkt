@@ -486,6 +486,7 @@
     (error 'cron "failed to install crontab")))
 
 ;; Remove a job's marker comment and its following cron line from crontab content.
+;; Skips any intervening blank or comment lines between the marker and the cron line.
 (define (crontab-remove-job name content)
   (define marker (string-append rcron-marker name))
   (define lines (string-split content "\n" #:trim? #f))
@@ -494,11 +495,15 @@
     (cond
       [(null? ls) (string-join (reverse acc) "\n")]
       [(string=? (string-trim (car ls)) marker)
-       ;; Skip the marker line and the following cron line
-       (loop (if (and (pair? (cdr ls)) (not (string-prefix? (cadr ls) "#")))
-                 (cddr ls)
-                 (cdr ls))
-             acc)]
+       ;; Skip the marker, any blank/comment lines, then the cron line itself
+       (define rest
+         (let skip ([r (cdr ls)])
+           (cond
+             [(null? r) r]
+             [(string=? (string-trim (car r)) "") (skip (cdr r))]
+             [(string-prefix? (string-trim (car r)) "#") (skip (cdr r))]
+             [else (cdr r)])))
+       (loop rest acc)]
       [else (loop (cdr ls) (cons (car ls) acc))])))
 
 (define (cron-install/linux name schedule command)
