@@ -19,15 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache Racket on Linux/macOS. setup-racket's dest
+      # parameter breaks on Windows (ENOENT in path expansion).
       - name: Cache Racket installation
+        if: runner.os != 'Windows'
         uses: actions/cache@v4
         id: cache-racket
         with:
           path: ${{ runner.tool_cache }}/racket
           key: ${{ runner.os }}-racket-${{ matrix.racket-version }}-${{ matrix.racket-variant }}
 
-      - name: Install Racket
-        if: steps.cache-racket.outputs.cache-hit != 'true'
+      - name: Install Racket (cached)
+        if: runner.os != 'Windows' && steps.cache-racket.outputs.cache-hit != 'true'
         uses: Bogdanp/setup-racket@v1.14
         with:
           version: ${{ matrix.racket-version }}
@@ -36,9 +39,16 @@ jobs:
           sudo: never
 
       - name: Restore Racket to PATH
-        if: steps.cache-racket.outputs.cache-hit == 'true'
+        if: runner.os != 'Windows' && steps.cache-racket.outputs.cache-hit == 'true'
         shell: bash
         run: echo "${{ runner.tool_cache }}/racket/bin" >> $GITHUB_PATH
+
+      - name: Install Racket (Windows)
+        if: runner.os == 'Windows'
+        uses: Bogdanp/setup-racket@v1.14
+        with:
+          version: ${{ matrix.racket-version }}
+          variant: ${{ matrix.racket-variant }}
 
       - name: Start cron daemon (Linux)
         if: runner.os == 'Linux'
