@@ -549,33 +549,13 @@
              #:when (bit-set? bits i))
     i))
 
-(define (generate-calendar-intervals expr)
-  (define minutes (bitfield->list (cron-expr-minutes expr) 0 59))
-  (define hours (bitfield->list (cron-expr-hours expr) 0 23))
-  (define days (bitfield->list (cron-expr-days expr) 1 31))
-  (define months (bitfield->list (cron-expr-months expr) 1 12))
-  (define weekdays (bitfield->list (cron-expr-weekdays expr) 0 6))
-  (define all-mins? (= (length minutes) 60))
-  (define all-hrs? (= (length hours) 24))
-  (define all-days? (= (length days) 31))
-  (define all-months? (= (length months) 12))
-  (define all-wdays? (= (length weekdays) 7))
+(define (calendar-interval-dicts mo-list dy-list wd-list hr-list mn-list)
   (apply string-append
-         (for*/list ([mo (in-list (if all-months?
-                                      '(#f)
-                                      months))]
-                     [dy (in-list (if all-days?
-                                      '(#f)
-                                      days))]
-                     [wd (in-list (if all-wdays?
-                                      '(#f)
-                                      weekdays))]
-                     [hr (in-list (if all-hrs?
-                                      '(#f)
-                                      hours))]
-                     [mn (in-list (if all-mins?
-                                      '(#f)
-                                      minutes))])
+         (for*/list ([mo (in-list mo-list)]
+                     [dy (in-list dy-list)]
+                     [wd (in-list wd-list)]
+                     [hr (in-list hr-list)]
+                     [mn (in-list mn-list)])
            (string-append "    <dict>\n"
                           (if mo
                               (format "      <key>Month</key>\n      <integer>~a</integer>\n" mo)
@@ -593,6 +573,35 @@
                               (format "      <key>Minute</key>\n      <integer>~a</integer>\n" mn)
                               "")
                           "    </dict>\n"))))
+
+(define (generate-calendar-intervals expr)
+  (define minutes (bitfield->list (cron-expr-minutes expr) 0 59))
+  (define hours (bitfield->list (cron-expr-hours expr) 0 23))
+  (define days (bitfield->list (cron-expr-days expr) 1 31))
+  (define months (bitfield->list (cron-expr-months expr) 1 12))
+  (define weekdays (bitfield->list (cron-expr-weekdays expr) 0 6))
+  (define all-mins? (= (length minutes) 60))
+  (define all-hrs? (= (length hours) 24))
+  (define all-days? (= (length days) 31))
+  (define all-months? (= (length months) 12))
+  (define all-wdays? (= (length weekdays) 7))
+  (define mo-list (if all-months? '(#f) months))
+  (define hr-list (if all-hrs? '(#f) hours))
+  (define mn-list (if all-mins? '(#f) minutes))
+  (define both-restricted?
+    (and (not (cron-expr-days-is-wildcard? expr))
+         (not (cron-expr-weekdays-is-wildcard? expr))))
+  (if both-restricted?
+      ;; POSIX OR: day-of-month and day-of-week must be in separate dicts
+      ;; so launchd fires when either matches, not both.
+      (string-append
+       (calendar-interval-dicts mo-list days '(#f) hr-list mn-list)
+       (calendar-interval-dicts mo-list '(#f) weekdays hr-list mn-list))
+      (calendar-interval-dicts mo-list
+                               (if all-days? '(#f) days)
+                               (if all-wdays? '(#f) weekdays)
+                               hr-list
+                               mn-list)))
 
 (define (xml-escape str)
   (regexp-replace* #rx"[&<>\"']"

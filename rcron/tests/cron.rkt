@@ -471,7 +471,7 @@
 
 (test-case "launchd calendar intervals should not combine Day and Weekday in one dict"
   (define base (or (current-load-relative-directory) (current-directory)))
-  (define lib-path (build-path base ".." "rcron-lib" "main.rkt"))
+  (define lib-path (build-path base ".." ".." "rcron-lib" "main.rkt"))
   (dynamic-require `(file ,(path->string lib-path)) #f)
   (define ns (module->namespace `(file ,(path->string lib-path))))
   (define generate-calendar-intervals (eval 'generate-calendar-intervals ns))
