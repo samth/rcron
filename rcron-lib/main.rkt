@@ -214,12 +214,13 @@
     (define base (car slash-parts))
     (define step-str (and (= (length slash-parts) 2) (cadr slash-parts)))
     (define step
-      (if step-str
-          (let ([n (string->number step-str)])
-            (when (or (not n) (not (exact-positive-integer? n)))
-              (error 'cron-parse "invalid step value: ~a" step-str))
-            n)
-          1))
+      (cond
+        [step-str
+         (define n (string->number step-str))
+         (when (or (not n) (not (exact-positive-integer? n)))
+           (error 'cron-parse "invalid step value: ~a" step-str))
+         n]
+        [else 1]))
 
     (define-values (range-min range-max)
       (cond
@@ -237,7 +238,7 @@
             (values lo hi)]
            [else
             (define v (parse-value base min-val max-val kind))
-            (when (not v)
+            (unless v
               (error 'cron-parse "invalid value: ~a" base))
             (values v (if step-str max-val v))])]))
 
@@ -258,10 +259,7 @@
   (define expr (string-trim expr-str))
   (cond
     [(and (> (string-length expr) 0) (char=? (string-ref expr 0) #\@))
-     (define result (parse-nickname expr))
-     (unless result
-       (error 'cron-parse "unknown nickname: ~a" expr))
-     result]
+     (or (parse-nickname expr) (error 'cron-parse "unknown nickname: ~a" expr))]
     [else
      (define fields (string-split expr))
      (when (> (length fields) 5)
@@ -335,10 +333,11 @@
 (define (normalize-date year month day hour minute second)
   (define-values (extra-hours norm-minute) (values (quotient minute 60) (modulo minute 60)))
   (define hour2 (+ hour extra-hours))
-  (define-values (extra-days norm-hour) (values (quotient hour2 24) (modulo hour2 24)))
+  (define extra-days (quotient hour2 24))
+  (define norm-hour (modulo hour2 24))
   (define day2 (+ day extra-days))
-  (define-values (extra-years norm-month0)
-    (values (quotient (sub1 month) 12) (add1 (modulo (sub1 month) 12))))
+  (define extra-years (quotient (sub1 month) 12))
+  (define norm-month0 (add1 (modulo (sub1 month) 12)))
   (define year2 (+ year extra-years))
   (let loop ([y year2]
              [m norm-month0]
@@ -808,7 +807,7 @@
 (define (cron-list/windows)
   (define out
     (with-output-to-string
-     (lambda () (system (string-append "schtasks /query /fo LIST | findstr \"rcron-\"")))))
+     (lambda () (system "schtasks /query /fo LIST | findstr \"rcron-\""))))
   (define lines (string-split out "\n"))
   (for/list ([line (in-list lines)]
              #:when (string-contains? line "rcron-"))
@@ -819,11 +818,10 @@
           (string-trim (substring trimmed (string-length prefix)))
           trimmed))
     (define task-prefix "\\rcron-")
-    (if (string-prefix? name-part task-prefix)
-        (substring name-part (string-length task-prefix))
-        (if (string-prefix? name-part "rcron-")
-            (substring name-part 7)
-            name-part))))
+    (cond
+      [(string-prefix? name-part task-prefix) (substring name-part (string-length task-prefix))]
+      [(string-prefix? name-part "rcron-") (substring name-part 7)]
+      [else name-part])))
 
 (define (cron-remove-all/windows)
   (for ([name (in-list (cron-list/windows))])
