@@ -331,7 +331,8 @@
      -32045))
 
 (define (normalize-date year month day hour minute second)
-  (define-values (extra-hours norm-minute) (values (quotient minute 60) (modulo minute 60)))
+  (define extra-hours (quotient minute 60))
+  (define norm-minute (modulo minute 60))
   (define hour2 (+ hour extra-hours))
   (define extra-days (quotient hour2 24))
   (define norm-hour (modulo hour2 24))
